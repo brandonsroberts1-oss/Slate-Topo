@@ -10,10 +10,18 @@ interval, edit the corner label, and download an SVG sized in real millimeters.
 
 ## Quick start
 
-No build step and no server required:
+**Easiest way — one file:** download **`slate-topo.html`** and double-click it.
+The entire app (styles, code, fonts) is inside that single file; only elevation
+data is fetched from the internet. On GitHub: click `slate-topo.html` → the
+**Download raw file** button (↓ icon, top right of the file view) → open the
+downloaded file in your browser.
 
-1. Open `index.html` in a browser (double-click works — everything is bundled;
-   only elevation data is fetched from the internet), **or** serve the folder:
+Running from the repo works too, but `index.html` needs its `css/`, `js/` and
+`vendor/` folders next to it — so clone or download the **whole project** (green
+**Code** button → Download ZIP → **extract it fully**), then:
+
+1. Open `index.html` from inside the extracted folder (double-click works), or
+   serve it:
 
    ```
    python3 -m http.server 8000
@@ -72,17 +80,31 @@ Things the app already guarantees for laser use:
 - If you have no internet connection, tick **Demo terrain** (or open
   `index.html?demo=1`) to play with a synthetic mountain.
 
+## Troubleshooting
+
+- **Plain black-and-white page, dead buttons, no map** (or an “App files
+  didn’t load” message): you opened `index.html` without its folders — usually
+  a lone downloaded file, or double-clicked inside a ZIP that wasn’t extracted.
+  Use the single `slate-topo.html` file instead, or extract the whole project
+  first.
+- **“Could not load elevation data”**: no internet (or a firewall blocking
+  `s3.amazonaws.com`). Tick **Demo terrain** to keep playing offline.
+- **Wrong size in xTool Creative Space**: set width/height manually to the mm
+  values shown under the preview (4″ = 101.6 mm).
+
 ## Repo layout
 
 ```
-index.html            app shell
+slate-topo.html       ← the whole app in ONE file (generated; download this)
+index.html            app shell (needs css/ js/ vendor/ beside it)
 css/style.css         styling
 js/contour.js         marching squares, chaining, clipping, simplification
 js/text.js            text → vector paths (opentype.js) + auto-sizing label box
 js/app.js             UI, elevation tiles, pipeline, SVG export
 vendor/opentype.min.js  opentype.js 1.3.4 (MIT)
 vendor/fonts-data.js    embedded fonts (base64 TTF)
-tools/build-fonts.py    regenerates vendor/fonts-data.js
+tools/build-fonts.py       regenerates vendor/fonts-data.js
+tools/build-single-file.py regenerates slate-topo.html after code edits
 ```
 
 See `vendor/LICENSES.md` for third-party licenses.

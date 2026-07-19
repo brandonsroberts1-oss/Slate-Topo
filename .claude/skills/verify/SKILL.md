@@ -43,6 +43,16 @@ this is what xTool Creative Space imports.
 
 - Export must never contain `<text>`, `<clipPath>`, or `<image>` — laser
   software ignores clip masks and may substitute fonts. Clipping is geometric.
+- Laser software also ignores `stroke-width`: the default "Filled outlines"
+  export mode expands every line into closed filled polygons at true width
+  (`ContourLib.strokeOutline`); "Centerlines" keeps stroked hairline paths.
+  Geometry invariants (border clip, label knockout) are checked on
+  `geometry.contours[].d`, which is always centerline data.
+- The label knockout is a **rounded** rect (`geometry.knock`, radius from the
+  "Box corner radius" field) — test containment with `sdRoundRect`, not a
+  plain rect test.
 - The SVG root must carry real units: `width="101.6mm"` for a 4″ coaster.
 - `window.SlateTopo` exposes `state`, `geometry`, `exportSVGString()` for
   driving checks from the console/page context.
+- Measuring exported SVGs via canvas: fill the canvas white first — the SVG
+  background is transparent, and transparent pixels read as black.

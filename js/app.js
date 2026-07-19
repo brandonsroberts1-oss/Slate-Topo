@@ -38,6 +38,8 @@
     labelText: 'Mount Shasta\nElev: 14,179 Ft',
     fontId: 'roboto-slab',
     textSize: 5.5, textPad: 2.4,  // mm
+    textRadius: 2,                // mm, label-box corner radius
+    exportMode: 'outline',        // 'outline' = filled true-width shapes, 'centerline' = hairline score paths
     coasterW: 4, coasterH: 4,     // inches
     cornerRadius: 0.25,           // inches
     borderMargin: 0.15,           // inches
@@ -308,10 +310,17 @@
     } else if (state.labelText.trim()) {
       warnings.push('Fonts failed to load — label omitted.');
     }
-    const knock = label ? label.box : null;
+    let knock = null;
+    if (label) {
+      const b = label.box;
+      knock = {
+        x: b.x, y: b.y, w: b.w, h: b.h,
+        r: clamp(state.textRadius, 0, Math.min(b.w, b.h) / 2),
+      };
+    }
 
     const insideClip = (x, y) => C.sdRoundRect(x, y, geom.clip) <= 0;
-    const outsideKnock = knock ? ((x, y) => !C.insideRect(x, y, knock)) : null;
+    const outsideKnock = knock ? ((x, y) => C.sdRoundRect(x, y, knock) > 0) : null;
 
     const contours = [];
     let lineCount = 0, ptCount = 0, dBytes = 0;
@@ -325,14 +334,14 @@
       const d = C.polylinesToPathData(lines);
       const bold = state.boldEvery > 0 && ((lvl.k % state.boldEvery) + state.boldEvery) % state.boldEvery === 0;
       const elevM = lvl.k * cc.intM;
-      contours.push({ elevM, bold, d });
+      contours.push({ elevM, bold, d, lines });
       lineCount += lines.length;
       for (const l of lines) ptCount += l.length;
       dBytes += d.length;
     }
 
     geometry = {
-      geom, contours, label,
+      geom, contours, label, knock,
       stats: {
         zmin: cc.zmin, zmax: cc.zmax,
         rawMin: terrain.minElev, rawMax: terrain.maxElev,
@@ -425,6 +434,7 @@
       areaMeters: Math.round(state.areaMeters),
       interval: state.interval + ' ' + state.intervalUnit,
       size: state.coasterW + 'x' + state.coasterH + ' in',
+      lineStyle: state.exportMode,
       demo: state.demo || undefined,
       attribution: DEM_ATTRIBUTION,
     };
@@ -434,17 +444,44 @@
     parts.push(`<desc>${escapeXml(JSON.stringify(meta))}</desc>`);
     const thin = g.contours.filter(c => !c.bold);
     const bold = g.contours.filter(c => c.bold);
-    if (thin.length) {
-      parts.push(`<g id="contours" fill="none" stroke="#000000" stroke-width="${f(state.lineWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
-      for (const c of thin) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${c.d}"/>`);
-      parts.push('</g>');
+    if (state.exportMode === 'outline') {
+      // True-width filled shapes: laser software ignores stroke-width, so every
+      // line is expanded into a closed polygon of its configured width.
+      const emitFilled = (id, list, width) => {
+        if (!list.length) return;
+        parts.push(`<g id="${id}" fill="#000000" stroke="none">`);
+        for (const c of list) {
+          let d = '';
+          for (const line of c.lines) d += C.ringsToPathData(C.strokeOutline(line, width));
+          if (d) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${d}"/>`);
+        }
+        parts.push('</g>');
+      };
+      emitFilled('contours', thin, state.lineWidth);
+      emitFilled('contours-index', bold, state.boldWidth);
+      const b = geom.border, bw = geom.bw;
+      const outer = {
+        x: b.x - bw / 2, y: b.y - bw / 2, w: b.w + bw, h: b.h + bw,
+        r: b.r > 0.01 ? b.r + bw / 2 : 0,
+      };
+      const inner = {
+        x: b.x + bw / 2, y: b.y + bw / 2, w: b.w - bw, h: b.h - bw,
+        r: Math.max(0, b.r - bw / 2),
+      };
+      parts.push(`<path id="border" fill="#000000" stroke="none" d="${C.roundRectPath(outer) + C.roundRectPath(inner, true)}"/>`);
+    } else {
+      if (thin.length) {
+        parts.push(`<g id="contours" fill="none" stroke="#000000" stroke-width="${f(state.lineWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
+        for (const c of thin) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${c.d}"/>`);
+        parts.push('</g>');
+      }
+      if (bold.length) {
+        parts.push(`<g id="contours-index" fill="none" stroke="#000000" stroke-width="${f(state.boldWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
+        for (const c of bold) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${c.d}"/>`);
+        parts.push('</g>');
+      }
+      parts.push(`<path id="border" fill="none" stroke="#000000" stroke-width="${f(geom.bw)}" d="${C.roundRectPath(geom.border)}"/>`);
     }
-    if (bold.length) {
-      parts.push(`<g id="contours-index" fill="none" stroke="#000000" stroke-width="${f(state.boldWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
-      for (const c of bold) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${c.d}"/>`);
-      parts.push('</g>');
-    }
-    parts.push(`<path id="border" fill="none" stroke="#000000" stroke-width="${f(geom.bw)}" d="${C.roundRectPath(geom.border)}"/>`);
     if (g.label && g.label.paths.length) {
       parts.push('<g id="label" fill="#000000" stroke="none">');
       for (const d of g.label.paths) parts.push(`<path d="${d}"/>`);
@@ -654,7 +691,8 @@
   // ---------------------------------------------------------------------------
   const HASH_FIELDS = ['lat', 'lon', 'areaMeters', 'areaUnit', 'interval', 'intervalUnit',
     'smoothing', 'lineWidth', 'boldEvery', 'boldWidth', 'labelText', 'fontId', 'textSize',
-    'textPad', 'coasterW', 'coasterH', 'cornerRadius', 'borderMargin', 'borderWidth'];
+    'textPad', 'textRadius', 'exportMode', 'coasterW', 'coasterH', 'cornerRadius',
+    'borderMargin', 'borderWidth'];
 
   const saveHashSoon = debounce(() => {
     const o = {};
@@ -716,6 +754,7 @@
     bindNumber('bold-width', 'boldWidth', { min: 0.05, max: 2 });
     bindNumber('text-size', 'textSize', { min: 1.5, max: 30 });
     bindNumber('text-pad', 'textPad', { min: 0.4, max: 15 });
+    bindNumber('text-radius', 'textRadius', { min: 0, max: 15 });
     bindNumber('coaster-w', 'coasterW', { min: 1, max: 24, rebuild: true });
     bindNumber('coaster-h', 'coasterH', { min: 1, max: 24, rebuild: true });
     bindNumber('corner-radius', 'cornerRadius', { min: 0, max: 6 });
@@ -760,6 +799,13 @@
 
     $('search-btn').addEventListener('click', doSearch);
     $('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+    if (state.exportMode !== 'outline' && state.exportMode !== 'centerline') state.exportMode = 'outline';
+    $('export-mode').value = state.exportMode;
+    $('export-mode').addEventListener('change', () => {
+      state.exportMode = $('export-mode').value;
+      saveHashSoon();
+    });
 
     $('demo-mode').checked = state.demo;
     $('demo-mode').addEventListener('change', () => {

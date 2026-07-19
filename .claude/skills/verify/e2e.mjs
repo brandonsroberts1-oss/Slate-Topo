@@ -89,7 +89,7 @@ await page.screenshot({ path: OUT + '/shot-1-shasta.png' });
 const inv = await page.evaluate(() => {
   const S = window.SlateTopo, C = window.ContourLib;
   const g = S.geometry, geo = g.geom;
-  const knock = g.label && g.label.box;
+  const knock = g.knock; // rounded knockout rect {x,y,w,h,r}
   let pts = 0, outsideBorder = 0, insideKnock = 0, worstSd = -1e9;
   const parse = d => {
     const out = [];
@@ -102,8 +102,7 @@ const inv = await page.evaluate(() => {
       const sd = C.sdRoundRect(p[0], p[1], geo.clip);
       if (sd > worstSd) worstSd = sd;
       if (sd > 0.05) outsideBorder++;
-      if (knock && p[0] > knock.x + 0.05 && p[0] < knock.x + knock.w - 0.05 &&
-          p[1] > knock.y + 0.05 && p[1] < knock.y + knock.h - 0.05) insideKnock++;
+      if (knock && C.sdRoundRect(p[0], p[1], knock) < -0.05) insideKnock++;
     }
   }
   return { pts, outsideBorder, insideKnock, worstSd };
@@ -118,6 +117,29 @@ ok('export has no <text>/<clipPath>/<image>', !/(<text|<clipPath|<image)/.test(s
 ok('export has label paths group', /<g id="label" fill="#000000"/.test(svg1));
 ok('export has border path', /<path id="border"/.test(svg1));
 ok('export paths all finite coords', !/NaN|Infinity/.test(svg1), `${(svg1.length / 1024).toFixed(0)} KB`);
+
+// Default mode = filled outlines: true widths survive laser import (which
+// ignores stroke-width). Contours become closed filled shapes; border is a
+// two-subpath band (outer + reversed inner ring).
+ok('outline mode: contours are filled shapes', /<g id="contours" fill="#000000" stroke="none">/.test(svg1) && !/stroke-width/.test(svg1));
+const borderD = (svg1.match(/<path id="border"[^>]*d="([^"]+)"/) || [])[1] || '';
+ok('outline mode: border is a band with a hole', (borderD.match(/M/g) || []).length === 2 && /fill="#000000"/.test(svg1.match(/<path id="border"[^>]*>/)[0]));
+const firstContourD = (svg1.match(/<g id="contours"[^>]*>\s*<path[^>]*d="([^"]+)"/) || [])[1] || '';
+ok('outline mode: shapes are closed (Z)', firstContourD.includes('Z'));
+
+// Centerline mode keeps classic stroked hairline paths for Score jobs.
+await page.selectOption('#export-mode', 'centerline');
+const svgC = await page.evaluate(() => window.SlateTopo.exportSVGString());
+ok('centerline mode: stroked paths with widths', /<g id="contours" fill="none" stroke="#000000" stroke-width="/.test(svgC) && /<path id="border" fill="none" stroke="#000000"/.test(svgC));
+await page.selectOption('#export-mode', 'outline');
+
+// Label-box corner radius control drives the knockout shape.
+await page.fill('#text-radius', '4');
+await page.waitForTimeout(400);
+const kr = await page.evaluate(() => window.SlateTopo.geometry.knock.r);
+ok('label box corner radius applies', Math.abs(kr - 4) < 0.01, `r=${kr}`);
+await page.fill('#text-radius', '2');
+await page.waitForTimeout(400);
 
 // ---- 3. Contour interval change through the UI ----
 await page.fill('#interval', '500');
@@ -135,12 +157,12 @@ const boxAfter = await page.evaluate(() => ({ ...window.SlateTopo.geometry.label
 ok('label box grows with more text', boxAfter.w > boxBefore.w + 5 && boxAfter.h > boxBefore.h + 3,
   `w ${boxBefore.w.toFixed(1)}→${boxAfter.w.toFixed(1)}, h ${boxBefore.h.toFixed(1)}→${boxAfter.h.toFixed(1)}`);
 const inv2 = await page.evaluate(() => {
-  const S = window.SlateTopo; const knock = S.geometry.label.box;
+  const S = window.SlateTopo, C = window.ContourLib;
+  const knock = S.geometry.knock;
   let bad = 0;
   for (const c of S.geometry.contours) {
     for (const m of c.d.matchAll(/[ML]\s*(-?[\d.]+)[ ,](-?[\d.]+)/g)) {
-      const x = +m[1], y = +m[2];
-      if (x > knock.x + 0.05 && x < knock.x + knock.w - 0.05 && y > knock.y + 0.05 && y < knock.y + knock.h - 0.05) bad++;
+      if (C.sdRoundRect(+m[1], +m[2], knock) < -0.05) bad++;
     }
   }
   return bad;

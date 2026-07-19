@@ -83,6 +83,11 @@
       <label class="field"><span>Box padding (mm)</span>
         <input id="text-pad" type="number" step="0.2" min="0.4" max="15"></label>
     </div>
+    <div class="row two">
+      <label class="field"><span>Box corner radius (mm)</span>
+        <input id="text-radius" type="number" step="0.5" min="0" max="15"></label>
+      <span></span>
+    </div>
   </section>
 
   <section>
@@ -107,10 +112,17 @@
   </section>
 
   <section class="export">
+    <label class="field"><span>SVG line style</span>
+      <select id="export-mode">
+        <option value="outline">Filled outlines — widths engrave as shown</option>
+        <option value="centerline">Centerlines — thinnest lines, fastest</option>
+      </select></label>
     <button id="download-btn" class="btn primary wide">Download SVG</button>
     <p class="hint">Import into xTool Creative Space and confirm the size matches
-      (4″ = 101.6 mm). Set contour + border layers to <b>Score</b>, the label to
-      <b>Engrave</b> (fill).</p>
+      (4″ = 101.6 mm). <b>Filled outlines:</b> set everything to <b>Engrave</b> —
+      line &amp; border widths come out exactly as set above. <b>Centerlines:</b>
+      set contours + border to <b>Score</b> (width comes from the laser beam, not
+      the mm settings) and the label to <b>Engrave</b>.</p>
     <label class="check"><input id="demo-mode" type="checkbox"> Demo terrain (offline)</label>
   </section>
 

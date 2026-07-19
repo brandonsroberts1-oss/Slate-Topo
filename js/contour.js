@@ -322,6 +322,116 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Stroke → outline expansion. Laser software (xTool XCS, LightBurn) ignores
+  // SVG stroke-width and treats paths as hairline centerlines, so to engrave a
+  // line at its true width we turn each polyline into a closed filled polygon:
+  // both offset sides plus round joins and round end caps. Closed loops become
+  // two rings with opposite winding (an annular band with a hole under the
+  // nonzero fill rule).
+  // ---------------------------------------------------------------------------
+  function offsetSide(P, half, closed) {
+    const n = P.length;
+    const out = [];
+    const dirAt = i => { // unit direction of edge P[i] -> P[i+1 (wrapped)]
+      const a = P[i], b = P[(i + 1) % n];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const L = Math.hypot(dx, dy) || 1;
+      return [dx / L, dy / L];
+    };
+    for (let i = 0; i < n; i++) {
+      const hasPrev = closed || i > 0;
+      const hasNext = closed || i < n - 1;
+      const dPrev = hasPrev ? dirAt((i - 1 + n) % n) : null;
+      const dNext = hasNext ? dirAt(i) : null;
+      const px = P[i][0], py = P[i][1];
+      if (!dPrev) { out.push([px - half * dNext[1], py + half * dNext[0]]); continue; }
+      if (!dNext) { out.push([px - half * dPrev[1], py + half * dPrev[0]]); continue; }
+      const npx = -dPrev[1], npy = dPrev[0]; // offset-side normals
+      const nnx = -dNext[1], nny = dNext[0];
+      const cross = dPrev[0] * dNext[1] - dPrev[1] * dNext[0];
+      const bx = npx + nnx, by = npy + nny;
+      const len = Math.hypot(bx, by);
+      if (len < 1e-3) { // ~180° reversal: crude round turn through the edge direction
+        out.push([px + half * npx, py + half * npy]);
+        out.push([px + half * dPrev[0], py + half * dPrev[1]]);
+        out.push([px + half * nnx, py + half * nny]);
+        continue;
+      }
+      const cosHalf = len / 2;
+      if (cross < -1e-9 && cosHalf < 0.99) {
+        // convex on this side -> round join arc from np to nn
+        const a0 = Math.atan2(npy, npx);
+        let sweep = Math.atan2(nny, nnx) - a0;
+        while (sweep > Math.PI) sweep -= 2 * Math.PI;
+        while (sweep < -Math.PI) sweep += 2 * Math.PI;
+        const steps = Math.max(1, Math.ceil(Math.abs(sweep) / 0.45));
+        for (let s = 0; s <= steps; s++) {
+          const a = a0 + sweep * s / steps;
+          out.push([px + half * Math.cos(a), py + half * Math.sin(a)]);
+        }
+      } else {
+        // concave or nearly straight -> (limited) miter
+        const scale = half / Math.max(cosHalf, 0.4);
+        out.push([px + scale * bx / len, py + scale * by / len]);
+      }
+    }
+    return out;
+  }
+
+  function capPoints(center, d, half) { // round cap: semicircle past the end of direction d
+    const pts = [];
+    const a0 = Math.atan2(d[0], -d[1]); // angle of the offset-side normal (-dy, dx)
+    for (let s = 1; s < 6; s++) {
+      const a = a0 - Math.PI * s / 6;
+      pts.push([center[0] + half * Math.cos(a), center[1] + half * Math.sin(a)]);
+    }
+    return pts;
+  }
+
+  function strokeOutline(pts, width) {
+    const half = width / 2;
+    const P = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const q = P[P.length - 1];
+      if (Math.hypot(pts[i][0] - q[0], pts[i][1] - q[1]) > 1e-6) P.push(pts[i]);
+    }
+    let n = P.length;
+    if (n < 2) return [];
+    const closed = n > 3 && Math.hypot(P[0][0] - P[n - 1][0], P[0][1] - P[n - 1][1]) < 1e-6;
+    if (closed) { P.pop(); n--; }
+    if (closed && n < 3) return [];
+    if (closed) {
+      // two rings with opposite winding form the band
+      return [offsetSide(P, half, true), offsetSide(P.slice().reverse(), half, true)];
+    }
+    const Q = P.slice().reverse();
+    const lastDir = (() => {
+      const a = P[n - 2], b = P[n - 1];
+      const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      return [(b[0] - a[0]) / L, (b[1] - a[1]) / L];
+    })();
+    const firstDirRev = [-((P[1][0] - P[0][0])), -((P[1][1] - P[0][1]))];
+    const L0 = Math.hypot(firstDirRev[0], firstDirRev[1]) || 1;
+    firstDirRev[0] /= L0; firstDirRev[1] /= L0;
+    const ring = offsetSide(P, half, false)
+      .concat(capPoints(P[n - 1], lastDir, half))
+      .concat(offsetSide(Q, half, false))
+      .concat(capPoints(P[0], firstDirRev, half));
+    return [ring];
+  }
+
+  function ringsToPathData(rings) {
+    const parts = [];
+    for (const ring of rings) {
+      if (ring.length < 3) continue;
+      let d = 'M' + fmt(ring[0][0]) + ' ' + fmt(ring[0][1]);
+      for (let i = 1; i < ring.length; i++) d += 'L' + fmt(ring[i][0]) + ' ' + fmt(ring[i][1]);
+      parts.push(d + 'Z');
+    }
+    return parts.join('');
+  }
+
+  // ---------------------------------------------------------------------------
   // SVG path data for a rounded rectangle (arc corners), and for polylines.
   // ---------------------------------------------------------------------------
   function fmt(n) {
@@ -329,11 +439,21 @@
     return s.indexOf('.') < 0 ? s : s.replace(/\.?0+$/, '');
   }
 
-  function roundRectPath(rect) {
+  function roundRectPath(rect, ccw) {
     const r = Math.min(rect.r || 0, rect.w / 2, rect.h / 2);
     const x = rect.x, y = rect.y, w = rect.w, h = rect.h;
     if (r <= 0.01) {
-      return 'M' + fmt(x) + ' ' + fmt(y) + 'H' + fmt(x + w) + 'V' + fmt(y + h) + 'H' + fmt(x) + 'Z';
+      return ccw
+        ? 'M' + fmt(x + w) + ' ' + fmt(y) + 'H' + fmt(x) + 'V' + fmt(y + h) + 'H' + fmt(x + w) + 'Z'
+        : 'M' + fmt(x) + ' ' + fmt(y) + 'H' + fmt(x + w) + 'V' + fmt(y + h) + 'H' + fmt(x) + 'Z';
+    }
+    if (ccw) {
+      const a = 'A' + fmt(r) + ' ' + fmt(r) + ' 0 0 0 ';
+      return 'M' + fmt(x + w - r) + ' ' + fmt(y) +
+        'H' + fmt(x + r) + a + fmt(x) + ' ' + fmt(y + r) +
+        'V' + fmt(y + h - r) + a + fmt(x + r) + ' ' + fmt(y + h) +
+        'H' + fmt(x + w - r) + a + fmt(x + w) + ' ' + fmt(y + h - r) +
+        'V' + fmt(y + r) + a + fmt(x + w - r) + ' ' + fmt(y) + 'Z';
     }
     const a = 'A' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ';
     return 'M' + fmt(x + r) + ' ' + fmt(y) +
@@ -365,6 +485,7 @@
     blurGrid, marchingSquares, chainSegments,
     sdRoundRect, insideRect, clipPolylines,
     simplifyLine, polylineLength, roundRectPath, polylinesToPathData, fmt,
+    strokeOutline, ringsToPathData,
   };
   global.ContourLib = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

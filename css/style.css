@@ -105,6 +105,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); padding: 6px 0; 
 
 .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
 .check { display: flex; gap: 7px; align-items: center; color: var(--muted); font-size: 12.5px; margin-top: 10px; cursor: pointer; }
+.export > .field { margin-bottom: 10px; }
 .check input { accent-color: var(--accent); }
 
 #search-results { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }

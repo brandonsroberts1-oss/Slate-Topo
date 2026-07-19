@@ -44,15 +44,23 @@ it and get the exact same map back.
 - Import the file, then **check the size**: a 4″ coaster should read
   **101.6 × 101.6 mm**. The SVG declares real mm units; if your XCS version
   ignores them, set the size manually to the values shown under the preview.
-- Contour lines + border: set processing to **Score**.
-- Label text: the letters are filled vector paths — set them to **Engrave**.
+- **Filled outlines** export (the default): select everything and set it to
+  **Engrave**. Every line is a filled shape at its exact mm width, so the
+  line-width and bold-line settings come out true on the slate.
+- **Centerlines** export: set contours + border to **Score** and the label to
+  **Engrave**. Scoring follows the path centerline, so line thickness comes
+  from the laser beam itself (the mm settings only affect the preview) — but
+  it's much faster than engraving.
 - Slate tip: always run a small material test first; light engraving on slate
-  turns pale gray/white, so scored lines look like the classic engraved look.
+  turns pale gray/white, so both modes give the classic engraved look.
 
 Things the app already guarantees for laser use:
 
 - **Everything is a real path.** Text is converted to outlines with an embedded
   font (no `<text>` elements), so nothing depends on installed fonts.
+- **Line widths are real geometry.** Laser software ignores SVG `stroke-width`,
+  so the default export expands every line into a closed filled polygon of its
+  configured width (round joins and caps included).
 - **Clipping is geometric, not visual.** Laser software ignores SVG masks, so
   the app actually cuts the polylines at the rounded border and removes them
   behind the label box — what you see is exactly what the laser traces.
@@ -68,7 +76,9 @@ Things the app already guarantees for laser use:
 | Smoothing | Blurs the elevation grid for cleaner, more organic lines |
 | Line / bold width | Stroke widths in mm; “bold every Nth” makes index contours heavier |
 | Label text & size | Multi-line label, auto-sizing knockout box, three embedded fonts |
+| Label box corner radius | Rounds the corners of the cleared box behind the text, echoing the border |
 | Coaster size | Width/height in inches (default 4×4), engraved-border corner radius, border margin & width |
+| SVG line style | **Filled outlines** (default): true-width shapes for Engrave. **Centerlines**: hairline paths for Score |
 
 ## Data & attribution
 
@@ -87,6 +97,11 @@ Things the app already guarantees for laser use:
   a lone downloaded file, or double-clicked inside a ZIP that wasn’t extracted.
   Use the single `slate-topo.html` file instead, or extract the whole project
   first.
+- **All lines import at the same hairline thickness in xTool**: laser software
+  ignores SVG stroke widths. Use the default **Filled outlines** line style
+  (Export section) — it converts every line into a filled shape at its true mm
+  width. The **Centerlines** style is for Score jobs, where thickness comes
+  from the beam, not the file.
 - **“Could not load elevation data”**: no internet (or a firewall blocking
   `s3.amazonaws.com`). Tick **Demo terrain** to keep playing offline.
 - **Wrong size in xTool Creative Space**: set width/height manually to the mm

@@ -113,6 +113,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); padding: 6px 0; 
 
 .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
 .check { display: flex; gap: 7px; align-items: center; color: var(--muted); font-size: 12.5px; margin-top: 10px; cursor: pointer; }
+.export > .field { margin-bottom: 10px; }
 .check input { accent-color: var(--accent); }
 
 #search-results { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
@@ -324,6 +325,11 @@ input[type="range"] { width: 100%; accent-color: var(--accent); padding: 6px 0; 
       <label class="field"><span>Box padding (mm)</span>
         <input id="text-pad" type="number" step="0.2" min="0.4" max="15"></label>
     </div>
+    <div class="row two">
+      <label class="field"><span>Box corner radius (mm)</span>
+        <input id="text-radius" type="number" step="0.5" min="0" max="15"></label>
+      <span></span>
+    </div>
   </section>
 
   <section>
@@ -348,10 +354,17 @@ input[type="range"] { width: 100%; accent-color: var(--accent); padding: 6px 0; 
   </section>
 
   <section class="export">
+    <label class="field"><span>SVG line style</span>
+      <select id="export-mode">
+        <option value="outline">Filled outlines — widths engrave as shown</option>
+        <option value="centerline">Centerlines — thinnest lines, fastest</option>
+      </select></label>
     <button id="download-btn" class="btn primary wide">Download SVG</button>
     <p class="hint">Import into xTool Creative Space and confirm the size matches
-      (4″ = 101.6 mm). Set contour + border layers to <b>Score</b>, the label to
-      <b>Engrave</b> (fill).</p>
+      (4″ = 101.6 mm). <b>Filled outlines:</b> set everything to <b>Engrave</b> —
+      line &amp; border widths come out exactly as set above. <b>Centerlines:</b>
+      set contours + border to <b>Score</b> (width comes from the laser beam, not
+      the mm settings) and the label to <b>Engrave</b>.</p>
     <label class="check"><input id="demo-mode" type="checkbox"> Demo terrain (offline)</label>
   </section>
 
@@ -710,6 +723,116 @@ window.SLATE_FONTS = [
   }
 
   // ---------------------------------------------------------------------------
+  // Stroke → outline expansion. Laser software (xTool XCS, LightBurn) ignores
+  // SVG stroke-width and treats paths as hairline centerlines, so to engrave a
+  // line at its true width we turn each polyline into a closed filled polygon:
+  // both offset sides plus round joins and round end caps. Closed loops become
+  // two rings with opposite winding (an annular band with a hole under the
+  // nonzero fill rule).
+  // ---------------------------------------------------------------------------
+  function offsetSide(P, half, closed) {
+    const n = P.length;
+    const out = [];
+    const dirAt = i => { // unit direction of edge P[i] -> P[i+1 (wrapped)]
+      const a = P[i], b = P[(i + 1) % n];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const L = Math.hypot(dx, dy) || 1;
+      return [dx / L, dy / L];
+    };
+    for (let i = 0; i < n; i++) {
+      const hasPrev = closed || i > 0;
+      const hasNext = closed || i < n - 1;
+      const dPrev = hasPrev ? dirAt((i - 1 + n) % n) : null;
+      const dNext = hasNext ? dirAt(i) : null;
+      const px = P[i][0], py = P[i][1];
+      if (!dPrev) { out.push([px - half * dNext[1], py + half * dNext[0]]); continue; }
+      if (!dNext) { out.push([px - half * dPrev[1], py + half * dPrev[0]]); continue; }
+      const npx = -dPrev[1], npy = dPrev[0]; // offset-side normals
+      const nnx = -dNext[1], nny = dNext[0];
+      const cross = dPrev[0] * dNext[1] - dPrev[1] * dNext[0];
+      const bx = npx + nnx, by = npy + nny;
+      const len = Math.hypot(bx, by);
+      if (len < 1e-3) { // ~180° reversal: crude round turn through the edge direction
+        out.push([px + half * npx, py + half * npy]);
+        out.push([px + half * dPrev[0], py + half * dPrev[1]]);
+        out.push([px + half * nnx, py + half * nny]);
+        continue;
+      }
+      const cosHalf = len / 2;
+      if (cross < -1e-9 && cosHalf < 0.99) {
+        // convex on this side -> round join arc from np to nn
+        const a0 = Math.atan2(npy, npx);
+        let sweep = Math.atan2(nny, nnx) - a0;
+        while (sweep > Math.PI) sweep -= 2 * Math.PI;
+        while (sweep < -Math.PI) sweep += 2 * Math.PI;
+        const steps = Math.max(1, Math.ceil(Math.abs(sweep) / 0.45));
+        for (let s = 0; s <= steps; s++) {
+          const a = a0 + sweep * s / steps;
+          out.push([px + half * Math.cos(a), py + half * Math.sin(a)]);
+        }
+      } else {
+        // concave or nearly straight -> (limited) miter
+        const scale = half / Math.max(cosHalf, 0.4);
+        out.push([px + scale * bx / len, py + scale * by / len]);
+      }
+    }
+    return out;
+  }
+
+  function capPoints(center, d, half) { // round cap: semicircle past the end of direction d
+    const pts = [];
+    const a0 = Math.atan2(d[0], -d[1]); // angle of the offset-side normal (-dy, dx)
+    for (let s = 1; s < 6; s++) {
+      const a = a0 - Math.PI * s / 6;
+      pts.push([center[0] + half * Math.cos(a), center[1] + half * Math.sin(a)]);
+    }
+    return pts;
+  }
+
+  function strokeOutline(pts, width) {
+    const half = width / 2;
+    const P = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const q = P[P.length - 1];
+      if (Math.hypot(pts[i][0] - q[0], pts[i][1] - q[1]) > 1e-6) P.push(pts[i]);
+    }
+    let n = P.length;
+    if (n < 2) return [];
+    const closed = n > 3 && Math.hypot(P[0][0] - P[n - 1][0], P[0][1] - P[n - 1][1]) < 1e-6;
+    if (closed) { P.pop(); n--; }
+    if (closed && n < 3) return [];
+    if (closed) {
+      // two rings with opposite winding form the band
+      return [offsetSide(P, half, true), offsetSide(P.slice().reverse(), half, true)];
+    }
+    const Q = P.slice().reverse();
+    const lastDir = (() => {
+      const a = P[n - 2], b = P[n - 1];
+      const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      return [(b[0] - a[0]) / L, (b[1] - a[1]) / L];
+    })();
+    const firstDirRev = [-((P[1][0] - P[0][0])), -((P[1][1] - P[0][1]))];
+    const L0 = Math.hypot(firstDirRev[0], firstDirRev[1]) || 1;
+    firstDirRev[0] /= L0; firstDirRev[1] /= L0;
+    const ring = offsetSide(P, half, false)
+      .concat(capPoints(P[n - 1], lastDir, half))
+      .concat(offsetSide(Q, half, false))
+      .concat(capPoints(P[0], firstDirRev, half));
+    return [ring];
+  }
+
+  function ringsToPathData(rings) {
+    const parts = [];
+    for (const ring of rings) {
+      if (ring.length < 3) continue;
+      let d = 'M' + fmt(ring[0][0]) + ' ' + fmt(ring[0][1]);
+      for (let i = 1; i < ring.length; i++) d += 'L' + fmt(ring[i][0]) + ' ' + fmt(ring[i][1]);
+      parts.push(d + 'Z');
+    }
+    return parts.join('');
+  }
+
+  // ---------------------------------------------------------------------------
   // SVG path data for a rounded rectangle (arc corners), and for polylines.
   // ---------------------------------------------------------------------------
   function fmt(n) {
@@ -717,11 +840,21 @@ window.SLATE_FONTS = [
     return s.indexOf('.') < 0 ? s : s.replace(/\.?0+$/, '');
   }
 
-  function roundRectPath(rect) {
+  function roundRectPath(rect, ccw) {
     const r = Math.min(rect.r || 0, rect.w / 2, rect.h / 2);
     const x = rect.x, y = rect.y, w = rect.w, h = rect.h;
     if (r <= 0.01) {
-      return 'M' + fmt(x) + ' ' + fmt(y) + 'H' + fmt(x + w) + 'V' + fmt(y + h) + 'H' + fmt(x) + 'Z';
+      return ccw
+        ? 'M' + fmt(x + w) + ' ' + fmt(y) + 'H' + fmt(x) + 'V' + fmt(y + h) + 'H' + fmt(x + w) + 'Z'
+        : 'M' + fmt(x) + ' ' + fmt(y) + 'H' + fmt(x + w) + 'V' + fmt(y + h) + 'H' + fmt(x) + 'Z';
+    }
+    if (ccw) {
+      const a = 'A' + fmt(r) + ' ' + fmt(r) + ' 0 0 0 ';
+      return 'M' + fmt(x + w - r) + ' ' + fmt(y) +
+        'H' + fmt(x + r) + a + fmt(x) + ' ' + fmt(y + r) +
+        'V' + fmt(y + h - r) + a + fmt(x + r) + ' ' + fmt(y + h) +
+        'H' + fmt(x + w - r) + a + fmt(x + w) + ' ' + fmt(y + h - r) +
+        'V' + fmt(y + r) + a + fmt(x + w - r) + ' ' + fmt(y) + 'Z';
     }
     const a = 'A' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ';
     return 'M' + fmt(x + r) + ' ' + fmt(y) +
@@ -753,6 +886,7 @@ window.SLATE_FONTS = [
     blurGrid, marchingSquares, chainSegments,
     sdRoundRect, insideRect, clipPolylines,
     simplifyLine, polylineLength, roundRectPath, polylinesToPathData, fmt,
+    strokeOutline, ringsToPathData,
   };
   global.ContourLib = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -895,6 +1029,8 @@ window.SLATE_FONTS = [
     labelText: 'Mount Shasta\nElev: 14,179 Ft',
     fontId: 'roboto-slab',
     textSize: 5.5, textPad: 2.4,  // mm
+    textRadius: 2,                // mm, label-box corner radius
+    exportMode: 'outline',        // 'outline' = filled true-width shapes, 'centerline' = hairline score paths
     coasterW: 4, coasterH: 4,     // inches
     cornerRadius: 0.25,           // inches
     borderMargin: 0.15,           // inches
@@ -1165,10 +1301,17 @@ window.SLATE_FONTS = [
     } else if (state.labelText.trim()) {
       warnings.push('Fonts failed to load — label omitted.');
     }
-    const knock = label ? label.box : null;
+    let knock = null;
+    if (label) {
+      const b = label.box;
+      knock = {
+        x: b.x, y: b.y, w: b.w, h: b.h,
+        r: clamp(state.textRadius, 0, Math.min(b.w, b.h) / 2),
+      };
+    }
 
     const insideClip = (x, y) => C.sdRoundRect(x, y, geom.clip) <= 0;
-    const outsideKnock = knock ? ((x, y) => !C.insideRect(x, y, knock)) : null;
+    const outsideKnock = knock ? ((x, y) => C.sdRoundRect(x, y, knock) > 0) : null;
 
     const contours = [];
     let lineCount = 0, ptCount = 0, dBytes = 0;
@@ -1182,14 +1325,14 @@ window.SLATE_FONTS = [
       const d = C.polylinesToPathData(lines);
       const bold = state.boldEvery > 0 && ((lvl.k % state.boldEvery) + state.boldEvery) % state.boldEvery === 0;
       const elevM = lvl.k * cc.intM;
-      contours.push({ elevM, bold, d });
+      contours.push({ elevM, bold, d, lines });
       lineCount += lines.length;
       for (const l of lines) ptCount += l.length;
       dBytes += d.length;
     }
 
     geometry = {
-      geom, contours, label,
+      geom, contours, label, knock,
       stats: {
         zmin: cc.zmin, zmax: cc.zmax,
         rawMin: terrain.minElev, rawMax: terrain.maxElev,
@@ -1282,6 +1425,7 @@ window.SLATE_FONTS = [
       areaMeters: Math.round(state.areaMeters),
       interval: state.interval + ' ' + state.intervalUnit,
       size: state.coasterW + 'x' + state.coasterH + ' in',
+      lineStyle: state.exportMode,
       demo: state.demo || undefined,
       attribution: DEM_ATTRIBUTION,
     };
@@ -1291,17 +1435,44 @@ window.SLATE_FONTS = [
     parts.push(`<desc>${escapeXml(JSON.stringify(meta))}</desc>`);
     const thin = g.contours.filter(c => !c.bold);
     const bold = g.contours.filter(c => c.bold);
-    if (thin.length) {
-      parts.push(`<g id="contours" fill="none" stroke="#000000" stroke-width="${f(state.lineWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
-      for (const c of thin) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${c.d}"/>`);
-      parts.push('</g>');
+    if (state.exportMode === 'outline') {
+      // True-width filled shapes: laser software ignores stroke-width, so every
+      // line is expanded into a closed polygon of its configured width.
+      const emitFilled = (id, list, width) => {
+        if (!list.length) return;
+        parts.push(`<g id="${id}" fill="#000000" stroke="none">`);
+        for (const c of list) {
+          let d = '';
+          for (const line of c.lines) d += C.ringsToPathData(C.strokeOutline(line, width));
+          if (d) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${d}"/>`);
+        }
+        parts.push('</g>');
+      };
+      emitFilled('contours', thin, state.lineWidth);
+      emitFilled('contours-index', bold, state.boldWidth);
+      const b = geom.border, bw = geom.bw;
+      const outer = {
+        x: b.x - bw / 2, y: b.y - bw / 2, w: b.w + bw, h: b.h + bw,
+        r: b.r > 0.01 ? b.r + bw / 2 : 0,
+      };
+      const inner = {
+        x: b.x + bw / 2, y: b.y + bw / 2, w: b.w - bw, h: b.h - bw,
+        r: Math.max(0, b.r - bw / 2),
+      };
+      parts.push(`<path id="border" fill="#000000" stroke="none" d="${C.roundRectPath(outer) + C.roundRectPath(inner, true)}"/>`);
+    } else {
+      if (thin.length) {
+        parts.push(`<g id="contours" fill="none" stroke="#000000" stroke-width="${f(state.lineWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
+        for (const c of thin) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${c.d}"/>`);
+        parts.push('</g>');
+      }
+      if (bold.length) {
+        parts.push(`<g id="contours-index" fill="none" stroke="#000000" stroke-width="${f(state.boldWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
+        for (const c of bold) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${c.d}"/>`);
+        parts.push('</g>');
+      }
+      parts.push(`<path id="border" fill="none" stroke="#000000" stroke-width="${f(geom.bw)}" d="${C.roundRectPath(geom.border)}"/>`);
     }
-    if (bold.length) {
-      parts.push(`<g id="contours-index" fill="none" stroke="#000000" stroke-width="${f(state.boldWidth)}" stroke-linecap="round" stroke-linejoin="round">`);
-      for (const c of bold) parts.push(`<path data-elev="${fmtElev(c.elevM)}" d="${c.d}"/>`);
-      parts.push('</g>');
-    }
-    parts.push(`<path id="border" fill="none" stroke="#000000" stroke-width="${f(geom.bw)}" d="${C.roundRectPath(geom.border)}"/>`);
     if (g.label && g.label.paths.length) {
       parts.push('<g id="label" fill="#000000" stroke="none">');
       for (const d of g.label.paths) parts.push(`<path d="${d}"/>`);
@@ -1511,7 +1682,8 @@ window.SLATE_FONTS = [
   // ---------------------------------------------------------------------------
   const HASH_FIELDS = ['lat', 'lon', 'areaMeters', 'areaUnit', 'interval', 'intervalUnit',
     'smoothing', 'lineWidth', 'boldEvery', 'boldWidth', 'labelText', 'fontId', 'textSize',
-    'textPad', 'coasterW', 'coasterH', 'cornerRadius', 'borderMargin', 'borderWidth'];
+    'textPad', 'textRadius', 'exportMode', 'coasterW', 'coasterH', 'cornerRadius',
+    'borderMargin', 'borderWidth'];
 
   const saveHashSoon = debounce(() => {
     const o = {};
@@ -1573,6 +1745,7 @@ window.SLATE_FONTS = [
     bindNumber('bold-width', 'boldWidth', { min: 0.05, max: 2 });
     bindNumber('text-size', 'textSize', { min: 1.5, max: 30 });
     bindNumber('text-pad', 'textPad', { min: 0.4, max: 15 });
+    bindNumber('text-radius', 'textRadius', { min: 0, max: 15 });
     bindNumber('coaster-w', 'coasterW', { min: 1, max: 24, rebuild: true });
     bindNumber('coaster-h', 'coasterH', { min: 1, max: 24, rebuild: true });
     bindNumber('corner-radius', 'cornerRadius', { min: 0, max: 6 });
@@ -1617,6 +1790,13 @@ window.SLATE_FONTS = [
 
     $('search-btn').addEventListener('click', doSearch);
     $('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+    if (state.exportMode !== 'outline' && state.exportMode !== 'centerline') state.exportMode = 'outline';
+    $('export-mode').value = state.exportMode;
+    $('export-mode').addEventListener('change', () => {
+      state.exportMode = $('export-mode').value;
+      saveHashSoon();
+    });
 
     $('demo-mode').checked = state.demo;
     $('demo-mode').addEventListener('change', () => {

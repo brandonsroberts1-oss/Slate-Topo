@@ -1,11 +1,13 @@
 # Marketing images
 
-Etsy-ready listing photos (3000 × 2250, 4:3 — Etsy's recommended size), generated
-from real terrain by `generate.mjs`. Mix them with actual product photos in a
-listing.
+Etsy-ready listing photos generated from real terrain by `generate.mjs`, styled
+on a rustic dark-walnut tabletop. Mix them with actual product photos in a
+listing. The four numbered images are 3000 × 2250 (Etsy's recommended 4:3);
+the thumbnail is 2048 × 2048 square.
 
 | File | Use |
 | --- | --- |
+| `etsy-0-thumbnail.jpg` | Square thumbnail — Crater Lake caldera (instantly recognizable ring + Wizard Island) |
 | `etsy-1-hero.jpg` | Personalization callouts — arrows to every field a buyer can customize |
 | `etsy-2-anywhere.jpg` | "Anywhere you love, mapped" — Shasta, Mont Blanc, Tahoe, Grand Canyon |
 | `etsy-3-make-it-yours.jpg` | The three lettering styles and the auto-sizing text panel |
